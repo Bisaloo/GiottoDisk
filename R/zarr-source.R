@@ -23,10 +23,15 @@
 # Rarr 1.10.1; the signature is (compressed_chunk, metadata).
 .zarr_check_rarr <- function() {
     GiottoUtils::package_check("Rarr", repository = "Bioc")
-    if (!is.function(get0(".decompress_chunk", envir = asNamespace("Rarr")))) {
+    if (packageVersion("Rarr") >= "1.11.13") {
+        blosc_decoder <- "codec_blosc_decode"
+    } else {
+        blosc_decoder <- ".decompress_chunk"
+    }
+    if (!is.function(get0(blosc_decoder, envir = asNamespace("Rarr")))) {
         stop("[zarr] installed Rarr (", utils::packageVersion("Rarr"),
-            ") does not provide the internal `.decompress_chunk` this ",
-            "reader was built against (tested with Rarr 1.10.1). ",
+            ") does not provide the internal blosc decoder this ",
+            "reader was built against. ",
             "Please report this to the GiottoDisk maintainers.",
             call. = FALSE)
     }
@@ -296,20 +301,33 @@
 # existence verified in `.zarr_open()`). Returns raw bytes ready for
 # readBin() reinterpretation.
 .zarr_blosc_decompress <- function(raw_bytes, meta, dt) {
-    base_type <- switch(dt$kind,
-        "f" = "float", "i" = "int", "u" = "uint", "b" = "uint",
-        "unknown")
-    rarr_meta <- list(
-        datatype = list(
-            nbytes = dt$size, base_type = base_type,
-            is_signed = (dt$kind == "i")
-        ),
-        compressor = meta$compressor,
-        chunks = meta$chunks,
-        order = meta$order %||% "C",
-        fill_value = meta$fill_value %||% 0
-    )
-    Rarr:::.decompress_chunk(raw_bytes, rarr_meta)
+    if (packageVersion("Rarr") >= "1.11.13") {
+        compressor <- meta$compressor
+        if (is.null(compressor)) {
+          return(raw_bytes)
+        }
+        do.call(paste0("Rarr:::codec_", compressor, "_decode"), list(raw_bytes))
+    } else {
+        # FIXME: Once Giottodisk starts requiring R 4.6.0 as the minimum
+        # version, the minimum required version for Rarr can be bumped 
+        # to 2.0.0 and this entire branch can be removed.
+        # .zarr_blosc_decompress() can then be removed entirely or aliased
+        # to Rarr:::codec_blosc_decode()
+        base_type <- switch(dt$kind,
+            "f" = "float", "i" = "int", "u" = "uint", "b" = "uint",
+            "unknown")
+        rarr_meta <- list(
+            datatype = list(
+                nbytes = dt$size, base_type = base_type,
+                is_signed = (dt$kind == "i")
+            ),
+            compressor = meta$compressor,
+            chunks = meta$chunks,
+            order = meta$order %||% "C",
+            fill_value = meta$fill_value %||% 0
+        )
+        Rarr:::.decompress_chunk(raw_bytes, rarr_meta)
+    }
 }
 
 # Reinterpret decompressed chunk bytes as an R vector per the dtype.
@@ -360,3 +378,4 @@
         stop("[zarr] unsupported dtype kind: ", dt$kind, call. = FALSE)
     }
 }
+  
